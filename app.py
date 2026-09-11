@@ -20,4 +20,6 @@ This system is designed to analyze:
 - Current_SCC_Pc.xlsx
 - LRD_Pc.xlsx
 
-Use the pages on the
+Use the pages on the left sidebar to navigate.
+24
+""")
