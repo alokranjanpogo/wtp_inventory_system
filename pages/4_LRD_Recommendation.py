@@ -1,210 +1,130 @@
 import streamlit as st
 import pandas as pd
-import calendar
 
-from utils.data_loader import (
-    load_monthly_turbidity,
-    load_lrd
+from utils.lrd_engine import (
+    get_month_turbidity,
+    apply_weather_adjustment,
+    get_lrd_recommendation,
+    get_days_in_month,
+    get_water_volume,
+    chemical_mt_from_dose,
+    apply_buffer
 )
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="LRD Recommendation",
+    layout="wide"
+)
 
-st.title("Chemical Demand Prediction Engine")
+st.title("LRD Recommendation & Chemical Demand Calculator")
 
-# -----------------------------
-# Load Data
-# -----------------------------
+# =====================================================
+# INPUTS
+# =====================================================
 
-monthly_df = load_monthly_turbidity()
-lrd_df = load_lrd()
-
-# -----------------------------
-# User Inputs
-# -----------------------------
-
-col1, col2, col3 = st.columns(3)
-
-months = [
-    "April","May","June","July","August",
-    "September","October","November",
-    "December","January","February","March"
-]
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
+
     month = st.selectbox(
-        "Select Month",
-        months
+        "Month",
+        [
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+            "January",
+            "February",
+            "March"
+        ]
     )
 
 with col2:
+
     production = st.number_input(
-        "Expected Production (MLD)",
+        "Production (MLD)",
         min_value=200,
         max_value=235,
         value=230
     )
 
 with col3:
-    strategy = st.selectbox(
-        "Coagulant Strategy",
+
+    weather_risk = st.selectbox(
+        "Weather Risk",
         [
-            "Auto",
-            "PAC Only",
-            "Alum Only",
-            "Mixed"
+            "Low",
+            "Moderate",
+            "High"
         ]
     )
 
-# -----------------------------
-# Get Monthly Turbidity
-# -----------------------------
+with col4:
 
-row = monthly_df[
-    monthly_df.iloc[:,0] == month
-]
-
-fy25 = float(row.iloc[0,1])
-fy26 = float(row.iloc[0,2])
-fy27 = float(row.iloc[0,3])
-
-avg_turbidity = (
-    fy25 + fy26 + fy27
-)/3
-
-normal_turbidity = avg_turbidity
-elevated_turbidity = avg_turbidity * 1.20
-extreme_turbidity = avg_turbidity * 1.50
-
-# -----------------------------
-# Function
-# -----------------------------
-
-def get_dose(turbidity):
-
-    lrd_df["diff"] = abs(
-        lrd_df["Raw_Turbidity_NTU"] - turbidity
+    strategy = st.selectbox(
+        "Strategy",
+        [
+            "Auto",
+            "PAC Only",
+            "Alum Only"
+        ]
     )
 
-    dose_row = lrd_df.loc[
-        lrd_df["diff"].idxmin()
-    ]
+# =====================================================
+# TURBIDITY SCENARIOS
+# =====================================================
 
-    return dose_row
+turbidity_data = get_month_turbidity(month)
 
+if turbidity_data is None:
 
-# Calendar Days
+    st.error("Month data not found.")
+    st.stop()
 
-day_map = {
+normal_turbidity = turbidity_data["normal"]
+elevated_turbidity = turbidity_data["elevated"]
+extreme_turbidity = turbidity_data["extreme"]
 
-    "April":30,
-    "May":31,
-    "June":30,
-    "July":31,
-    "August":31,
-    "September":30,
-    "October":31,
-    "November":30,
-    "December":31,
-    "January":31,
-    "February":28,
-    "March":31
-}
+# Weather correction
 
-days = day_map[month]
+normal_turbidity = apply_weather_adjustment(
+    normal_turbidity,
+    weather_risk
+)
 
-water_volume = production * days
+elevated_turbidity = apply_weather_adjustment(
+    elevated_turbidity,
+    weather_risk
+)
 
-# -----------------------------
-# Scenario Calculation
-# -----------------------------
+extreme_turbidity = apply_weather_adjustment(
+    extreme_turbidity,
+    weather_risk
+)
 
-scenario_data = []
+# =====================================================
+# DAYS & WATER VOLUME
+# =====================================================
 
-scenarios = {
+days = get_days_in_month(month)
 
-    "Normal": normal_turbidity,
-    "Elevated": elevated_turbidity,
-    "Extreme": extreme_turbidity
+water_volume = get_water_volume(
+    production,
+    days
+)
 
-}
+# =====================================================
+# KPI SECTION
+# =====================================================
 
-for scenario, turb in scenarios.items():
+st.subheader("Planning Inputs")
 
-    dose = get_dose(turb)
-
-    s_alum = float(dose["S/Alum"]) \
-        if pd.notna(dose["S/Alum"]) else 0
-
-    l_alum = float(dose["L/Alum"]) \
-        if pd.notna(dose["L/Alum"]) else 0
-
-    p_pac = float(dose["P/PAC"]) \
-        if pd.notna(dose["P/PAC"]) else 0
-
-    l_pac = float(dose["L/PAC"]) \
-        if pd.notna(dose["L/PAC"]) else 0
-
-    polymer = float(dose["Polymer"]) \
-        if pd.notna(dose["Polymer"]) else 0
-
-    # Buffer
-
-    if scenario == "Normal":
-        buffer = 1.10
-
-    elif scenario == "Elevated":
-        buffer = 1.20
-
-    else:
-        buffer = 1.30
-
-    # Requirement
-
-    s_alum_mt = (
-        s_alum * water_volume
-    ) / 1000
-
-    l_alum_mt = (
-        l_alum * water_volume
-    ) / 1000
-
-    p_pac_mt = (
-        p_pac * water_volume
-    ) / 1000
-
-    l_pac_mt = (
-        l_pac * water_volume
-    ) / 1000
-
-    polymer_mt = (
-        polymer * water_volume
-    ) / 1000
-
-    s_alum_mt *= buffer
-    l_alum_mt *= buffer
-    p_pac_mt *= buffer
-    l_pac_mt *= buffer
-    polymer_mt *= buffer
-
-    scenario_data.append({
-
-        "Scenario": scenario,
-        "Turbidity NTU": round(turb,2),
-        "S/Alum MT": round(s_alum_mt,2),
-        "L/Alum MT": round(l_alum_mt,2),
-        "P/PAC MT": round(p_pac_mt,2),
-        "L/PAC MT": round(l_pac_mt,2),
-        "Polymer MT": round(polymer_mt,2)
-
-    })
-
-# -----------------------------
-# KPI
-# -----------------------------
-
-st.subheader("Prediction Inputs")
-
-c1,c2,c3,c4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 
 c1.metric(
     "Month",
@@ -222,4 +142,158 @@ c3.metric(
 )
 
 c4.metric(
-    
+    "Water Volume",
+    f"{water_volume:,.0f} ML"
+)
+
+# =====================================================
+# CALCULATIONS
+# =====================================================
+
+results = []
+
+scenario_dict = {
+
+    "Normal": normal_turbidity,
+    "Elevated": elevated_turbidity,
+    "Extreme": extreme_turbidity
+
+}
+
+for scenario, turbidity in scenario_dict.items():
+
+    recommendation = get_lrd_recommendation(
+        turbidity
+    )
+
+    s_alum = recommendation["s_alum"]
+    l_alum = recommendation["l_alum"]
+    p_pac = recommendation["p_pac"]
+    l_pac = recommendation["l_pac"]
+    polymer = recommendation["polymer"]
+
+    # =================================================
+    # STRATEGY
+    # =================================================
+
+    if strategy == "PAC Only":
+
+        s_alum = 0
+        l_alum = 0
+
+    elif strategy == "Alum Only":
+
+        p_pac = 0
+        l_pac = 0
+
+    # =================================================
+    # QUANTITY CALCULATION
+    # =================================================
+
+    s_alum_mt = chemical_mt_from_dose(
+        s_alum,
+        water_volume
+    )
+
+    l_alum_mt = chemical_mt_from_dose(
+        l_alum,
+        water_volume
+    )
+
+    p_pac_mt = chemical_mt_from_dose(
+        p_pac,
+        water_volume
+    )
+
+    l_pac_mt = chemical_mt_from_dose(
+        l_pac,
+        water_volume
+    )
+
+    polymer_mt = chemical_mt_from_dose(
+        polymer,
+        water_volume
+    )
+
+    s_alum_mt = apply_buffer(
+        s_alum_mt,
+        scenario
+    )
+
+    l_alum_mt = apply_buffer(
+        l_alum_mt,
+        scenario
+    )
+
+    p_pac_mt = apply_buffer(
+        p_pac_mt,
+        scenario
+    )
+
+    l_pac_mt = apply_buffer(
+        l_pac_mt,
+        scenario
+    )
+
+    polymer_mt = apply_buffer(
+        polymer_mt,
+        scenario
+    )
+
+    results.append({
+
+        "Scenario": scenario,
+
+        "Predicted Turbidity (NTU)":
+            round(turbidity, 2),
+
+        "S/Alum (MT)":
+            round(s_alum_mt, 2),
+
+        "L/Alum (MT)":
+            round(l_alum_mt, 2),
+
+        "P/PAC (MT)":
+            round(p_pac_mt, 2),
+
+        "L/PAC (MT)":
+            round(l_pac_mt, 2),
+
+        "Polymer (MT)":
+            round(polymer_mt, 2)
+
+    })
+
+# =====================================================
+# DISPLAY RESULTS
+# =====================================================
+
+st.subheader("Chemical Demand Forecast")
+
+forecast_df = pd.DataFrame(results)
+
+st.dataframe(
+    forecast_df,
+    use_container_width=True
+)
+
+# =====================================================
+# RECOMMENDATION
+# =====================================================
+
+st.subheader("Planning Recommendation")
+
+extreme_row = forecast_df[
+    forecast_df["Scenario"] == "Extreme"
+]
+
+st.info(
+    "For procurement planning, keep stock "
+    "equal to or higher than the EXTREME "
+    "scenario demand."
+)
+
+st.dataframe(
+    extreme_row,
+    use_container_width=True
+)
