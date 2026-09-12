@@ -7,16 +7,34 @@ from utils.data_loader import (
 )
 
 
-# --------------------------------------------------
-# Get Month Turbidity Statistics
-# --------------------------------------------------
+# ==========================================================
+# SAFE FLOAT
+# ==========================================================
 
-def get_month_turbidity(month):
+def safe_float(value):
+    try:
+        if pd.isna(value):
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+# ==========================================================
+# MONTH TURBIDITY LOGIC
+# ==========================================================
+
+def get_month_turbidity(
+    month,
+    exclude_outlier=True
+):
 
     monthly_df = load_monthly_turbidity()
 
     row = monthly_df[
-        monthly_df.iloc[:, 0].astype(str).str.strip()
+        monthly_df.iloc[:, 0]
+        .astype(str)
+        .str.strip()
         == month
     ]
 
@@ -33,118 +51,219 @@ def get_month_turbidity(month):
         )
 
         if pd.notna(value):
-            values.append(value)
+            values.append(float(value))
 
-    values = sorted(values)
+    values.sort()
+
+    working_values = values.copy()
+
+    # -------------------------------------------------
+    # SIMPLE OUTLIER LOGIC
+    # -------------------------------------------------
+
+    if exclude_outlier and len(values) == 3:
+
+        low = values[0]
+        mid = values[1]
+        high = values[2]
+
+        lower_gap = mid - low
+        upper_gap = high - mid
+
+        if lower_gap > 0:
+
+            if upper_gap > (lower_gap * 1.5):
+
+                working_values.remove(high)
+
+    if len(working_values) == 0:
+        working_values = values
+
+    # -------------------------------------------------
+    # EXPECTED
+    # -------------------------------------------------
+
+    expected = round(
+        sum(working_values)
+        / len(working_values),
+        2
+    )
+
+    # -------------------------------------------------
+    # VARIABILITY
+    # -------------------------------------------------
+
+    variability = round(
+        max(working_values)
+        - min(working_values),
+        2
+    )
+
+    # -------------------------------------------------
+    # PLANNING
+    # -------------------------------------------------
+
+    planning = round(
+        expected
+        + (variability * 0.15),
+        2
+    )
+
+    # -------------------------------------------------
+    # EMERGENCY
+    # -------------------------------------------------
+
+    emergency = round(
+        expected
+        + (variability * 0.30),
+        2
+    )
 
     return {
 
-        "normal": values[1],      # median
+        "raw_values": values,
 
-        "elevated": round(
-            sum(values) / len(values),
-            2
-        ),
+        "working_values": working_values,
 
-        "extreme": max(values)
+        "expected": expected,
+
+        "planning": planning,
+
+        "emergency": emergency,
+
+        "variability": variability
 
     }
 
 
-# --------------------------------------------------
-# Weather Correction
-# --------------------------------------------------
+# ==========================================================
+# WEATHER ADJUSTMENT
+# ==========================================================
 
 def apply_weather_adjustment(
-        turbidity,
-        weather_risk
+    turbidity,
+    weather_risk
 ):
 
-    weather_risk = weather_risk.lower()
+    weather_factors = {
 
-    if weather_risk == "low":
+        "Low": 1.00,
+        "Moderate": 1.05,
+        "High": 1.10
 
-        return turbidity
+    }
 
-    elif weather_risk == "moderate":
+    factor = weather_factors.get(
+        weather_risk,
+        1.00
+    )
 
-        return turbidity * 1.10
-
-    elif weather_risk == "high":
-
-        return turbidity * 1.20
-
-    return turbidity
+    return round(
+        turbidity * factor,
+        2
+    )
 
 
-# --------------------------------------------------
-# Nearest LRD Match
-# --------------------------------------------------
+# ==========================================================
+# LRD LOOKUP
+# ==========================================================
 
 def get_lrd_recommendation(
-        turbidity
+    turbidity
 ):
 
     lrd_df = load_lrd().copy()
 
-    turbidity_col = "Raw_Turbidity_NTU"
-
-    lrd_df[turbidity_col] = pd.to_numeric(
-        lrd_df[turbidity_col],
+    lrd_df["Raw_Turbidity_NTU"] = pd.to_numeric(
+        lrd_df["Raw_Turbidity_NTU"],
         errors="coerce"
     )
 
     lrd_df = lrd_df.dropna(
-        subset=[turbidity_col]
+        subset=["Raw_Turbidity_NTU"]
     )
 
-    lrd_df["diff"] = abs(
-        lrd_df[turbidity_col]
+    lrd_df["Difference"] = abs(
+        lrd_df["Raw_Turbidity_NTU"]
         - turbidity
     )
 
     row = lrd_df.sort_values(
-        "diff"
+        "Difference"
     ).iloc[0]
 
     return {
 
-        "turbidity": row["Raw_Turbidity_NTU"],
+        "matched_turbidity":
+            safe_float(
+                row["Raw_Turbidity_NTU"]
+            ),
 
-        "s_alum": pd.to_numeric(
-            row.get("S/Alum", 0),
-            errors="coerce"
-        ),
+        "s_alum":
+            safe_float(
+                row["S/Alum"]
+            ),
 
-        "l_alum": pd.to_numeric(
-            row.get("L/Alum", 0),
-            errors="coerce"
-        ),
+        "l_alum":
+            safe_float(
+                row["L/Alum"]
+            ),
 
-        "p_pac": pd.to_numeric(
-            row.get("P/PAC", 0),
-            errors="coerce"
-        ),
+        "p_pac":
+            safe_float(
+                row["P/PAC"]
+            ),
 
-        "l_pac": pd.to_numeric(
-            row.get("L/PAC", 0),
-            errors="coerce"
-        ),
+        "l_pac":
+            safe_float(
+                row["L/PAC"]
+            ),
 
-        "polymer": pd.to_numeric(
-            row.get("Polymer", 0),
-            errors="coerce"
-        )
+        "polymer":
+            safe_float(
+                row["Polymer"]
+            )
+
     }
 
 
-# --------------------------------------------------
-# Month Days
-# --------------------------------------------------
+# ==========================================================
+# AUTO STRATEGY
+# ==========================================================
+
+def get_auto_strategy(
+    recommendation
+):
+
+    pac_total = (
+        recommendation["p_pac"]
+        +
+        recommendation["l_pac"]
+    )
+
+    alum_total = (
+        recommendation["s_alum"]
+        +
+        recommendation["l_alum"]
+    )
+
+    if pac_total > alum_total:
+        return "PAC"
+
+    elif alum_total > pac_total:
+        return "ALUM"
+
+    else:
+        return "MIXED"
+
+
+# ==========================================================
+# DAYS IN MONTH
+# ==========================================================
 
 def get_days_in_month(
-        month_name,
-        year=2026
+    month_name,
+    year=2026
 ):
 
     month_map = {
@@ -164,73 +283,63 @@ def get_days_in_month(
 
     }
 
-    month_no = month_map[month_name]
+    month_number = month_map[
+        month_name
+    ]
 
     return calendar.monthrange(
         year,
-        month_no
+        month_number
     )[1]
 
 
-# --------------------------------------------------
-# Water Volume
-# --------------------------------------------------
+# ==========================================================
+# WATER VOLUME
+# ==========================================================
 
 def get_water_volume(
-        production_mld,
-        days
+    production_mld,
+    days
 ):
 
     return production_mld * days
 
 
-# --------------------------------------------------
+# ==========================================================
+# CHEMICAL DEMAND
 # ppm × ML = kg
 # kg / 1000 = MT
-# --------------------------------------------------
+# ==========================================================
 
 def chemical_mt_from_dose(
-        dose_ppm,
-        water_volume
+    dose_ppm,
+    water_volume
 ):
 
     kg = dose_ppm * water_volume
 
     mt = kg / 1000
 
-    return round(mt, 2)
+    return round(
+        mt,
+        2
+    )
 
 
-# --------------------------------------------------
-# Risk Buffer
-# --------------------------------------------------
+# ==========================================================
+# PROCUREMENT BUFFER
+# ==========================================================
 
-def apply_buffer(
-        quantity_mt,
-        scenario
+def procurement_quantity(
+    quantity_mt,
+    buffer_percent=15
 ):
 
-    scenario = scenario.lower()
-
-    if scenario == "normal":
-
-        return round(
-            quantity_mt * 1.10,
-            2
-        )
-
-    elif scenario == "elevated":
-
-        return round(
-            quantity_mt * 1.20,
-            2
-        )
-
-    elif scenario == "extreme":
-
-        return round(
-            quantity_mt * 1.30,
-            2
-        )
-
-    return quantity_mt
+    return round(
+        quantity_mt
+        * (
+            1 +
+            buffer_percent / 100
+        ),
+        2
+    )
