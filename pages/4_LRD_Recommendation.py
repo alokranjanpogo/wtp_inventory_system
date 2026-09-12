@@ -11,6 +11,10 @@ from utils.lrd_engine import (
     apply_buffer
 )
 
+# -------------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------------
+
 st.set_page_config(
     page_title="LRD Recommendation",
     layout="wide"
@@ -18,16 +22,16 @@ st.set_page_config(
 
 st.title("LRD Recommendation & Chemical Demand Calculator")
 
-# =====================================================
+# -------------------------------------------------------
 # INPUTS
-# =====================================================
+# -------------------------------------------------------
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
 
     month = st.selectbox(
-        "Month",
+        "Select Month",
         [
             "April",
             "May",
@@ -47,7 +51,7 @@ with col1:
 with col2:
 
     production = st.number_input(
-        "Production (MLD)",
+        "Expected Production (MLD)",
         min_value=200,
         max_value=235,
         value=230
@@ -67,7 +71,7 @@ with col3:
 with col4:
 
     strategy = st.selectbox(
-        "Strategy",
+        "Treatment Strategy",
         [
             "Auto",
             "PAC Only",
@@ -75,22 +79,24 @@ with col4:
         ]
     )
 
-# =====================================================
-# TURBIDITY SCENARIOS
-# =====================================================
+# -------------------------------------------------------
+# GET MONTH TURBIDITY
+# -------------------------------------------------------
 
 turbidity_data = get_month_turbidity(month)
 
 if turbidity_data is None:
 
-    st.error("Month data not found.")
+    st.error("Unable to find month in Monthly Historical Turbidity_Pc.xlsx")
     st.stop()
 
 normal_turbidity = turbidity_data["normal"]
 elevated_turbidity = turbidity_data["elevated"]
 extreme_turbidity = turbidity_data["extreme"]
 
-# Weather correction
+# -------------------------------------------------------
+# WEATHER ADJUSTMENT
+# -------------------------------------------------------
 
 normal_turbidity = apply_weather_adjustment(
     normal_turbidity,
@@ -107,9 +113,9 @@ extreme_turbidity = apply_weather_adjustment(
     weather_risk
 )
 
-# =====================================================
-# DAYS & WATER VOLUME
-# =====================================================
+# -------------------------------------------------------
+# WATER VOLUME
+# -------------------------------------------------------
 
 days = get_days_in_month(month)
 
@@ -118,39 +124,37 @@ water_volume = get_water_volume(
     days
 )
 
-# =====================================================
+# -------------------------------------------------------
 # KPI SECTION
-# =====================================================
+# -------------------------------------------------------
 
 st.subheader("Planning Inputs")
 
-c1, c2, c3, c4 = st.columns(4)
+k1, k2, k3, k4 = st.columns(4)
 
-c1.metric(
+k1.metric(
     "Month",
     month
 )
 
-c2.metric(
+k2.metric(
     "Production",
     f"{production} MLD"
 )
 
-c3.metric(
+k3.metric(
     "Days",
     days
 )
 
-c4.metric(
+k4.metric(
     "Water Volume",
     f"{water_volume:,.0f} ML"
 )
 
-# =====================================================
-# CALCULATIONS
-# =====================================================
-
-results = []
+# -------------------------------------------------------
+# SCENARIOS
+# -------------------------------------------------------
 
 scenario_dict = {
 
@@ -159,6 +163,13 @@ scenario_dict = {
     "Extreme": extreme_turbidity
 
 }
+
+dose_results = []
+demand_results = []
+
+# -------------------------------------------------------
+# LOOP
+# -------------------------------------------------------
 
 for scenario, turbidity in scenario_dict.items():
 
@@ -172,9 +183,9 @@ for scenario, turbidity in scenario_dict.items():
     l_pac = recommendation["l_pac"]
     polymer = recommendation["polymer"]
 
-    # =================================================
-    # STRATEGY
-    # =================================================
+    # ------------------------------------
+    # STRATEGY FILTER
+    # ------------------------------------
 
     if strategy == "PAC Only":
 
@@ -186,9 +197,25 @@ for scenario, turbidity in scenario_dict.items():
         p_pac = 0
         l_pac = 0
 
-    # =================================================
-    # QUANTITY CALCULATION
-    # =================================================
+    # ------------------------------------
+    # STORE DOSES
+    # ------------------------------------
+
+    dose_results.append({
+
+        "Scenario": scenario,
+        "Predicted Turbidity (NTU)": round(turbidity, 2),
+        "S/Alum Dose (ppm)": s_alum,
+        "L/Alum Dose (ppm)": l_alum,
+        "P/PAC Dose (ppm)": p_pac,
+        "L/PAC Dose (ppm)": l_pac,
+        "Polymer Dose (ppm)": polymer
+
+    })
+
+    # ------------------------------------
+    # DEMAND CALCULATION
+    # ------------------------------------
 
     s_alum_mt = chemical_mt_from_dose(
         s_alum,
@@ -240,60 +267,84 @@ for scenario, turbidity in scenario_dict.items():
         scenario
     )
 
-    results.append({
+    demand_results.append({
 
         "Scenario": scenario,
-
-        "Predicted Turbidity (NTU)":
-            round(turbidity, 2),
-
-        "S/Alum (MT)":
-            round(s_alum_mt, 2),
-
-        "L/Alum (MT)":
-            round(l_alum_mt, 2),
-
-        "P/PAC (MT)":
-            round(p_pac_mt, 2),
-
-        "L/PAC (MT)":
-            round(l_pac_mt, 2),
-
-        "Polymer (MT)":
-            round(polymer_mt, 2)
+        "Predicted Turbidity (NTU)": round(turbidity, 2),
+        "S/Alum (MT)": round(s_alum_mt, 2),
+        "L/Alum (MT)": round(l_alum_mt, 2),
+        "P/PAC (MT)": round(p_pac_mt, 2),
+        "L/PAC (MT)": round(l_pac_mt, 2),
+        "Polymer (MT)": round(polymer_mt, 2)
 
     })
 
-# =====================================================
-# DISPLAY RESULTS
-# =====================================================
+# -------------------------------------------------------
+# STRATEGY MESSAGE
+# -------------------------------------------------------
+
+st.subheader("Treatment Recommendation")
+
+if strategy == "PAC Only":
+
+    st.success("Recommended Treatment Strategy : PAC ONLY")
+
+elif strategy == "Alum Only":
+
+    st.success("Recommended Treatment Strategy : ALUM ONLY")
+
+else:
+
+    st.success(
+        "Recommended Treatment Strategy : AUTO (Based on LRD)"
+    )
+
+# -------------------------------------------------------
+# DOSE TABLE
+# -------------------------------------------------------
+
+st.subheader("Recommended Dose")
+
+dose_df = pd.DataFrame(
+    dose_results
+)
+
+st.dataframe(
+    dose_df,
+    use_container_width=True
+)
+
+# -------------------------------------------------------
+# DEMAND TABLE
+# -------------------------------------------------------
 
 st.subheader("Chemical Demand Forecast")
 
-forecast_df = pd.DataFrame(results)
+demand_df = pd.DataFrame(
+    demand_results
+)
 
 st.dataframe(
-    forecast_df,
+    demand_df,
     use_container_width=True
 )
 
-# =====================================================
-# RECOMMENDATION
-# =====================================================
+# -------------------------------------------------------
+# PROCUREMENT TABLE
+# -------------------------------------------------------
 
-st.subheader("Planning Recommendation")
+st.subheader("Procurement Planning Scenario")
 
-extreme_row = forecast_df[
-    forecast_df["Scenario"] == "Extreme"
+extreme_df = demand_df[
+    demand_df["Scenario"] == "Extreme"
 ]
 
-st.info(
-    "For procurement planning, keep stock "
-    "equal to or higher than the EXTREME "
-    "scenario demand."
+st.dataframe(
+    extreme_df,
+    use_container_width=True
 )
 
-st.dataframe(
-    extreme_row,
-    use_container_width=True
+st.info(
+    "Use the EXTREME scenario for procurement planning "
+    "and safety stock calculations."
 )
